@@ -247,27 +247,28 @@ async function handleTool(name, args) {
 
 // ── Servidor Express + SSE ──────────────────────────────────────────────────────
 const app = express();
+
+// CORS — permite conexiones desde Claude.ai y cualquier cliente externo
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, x-mcp-session-id');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 app.use(express.json());
 
 // Mapa de sesiones SSE activas
 const transports = new Map();
 
-// Healthcheck para Render
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', server: 'rema-meta-ads MCP', version: '1.0.0' });
-});
-
-// Endpoint SSE — Claude.ai se conecta aquí
-app.get('/sse', async (req, res) => {
-  const transport = new SSEServerTransport('/messages', res);
-
+// Función que crea y configura el servidor MCP (se reutiliza por sesión)
+function buildMcpServer() {
   const server = new Server(
     { name: 'rema-meta-ads', version: '1.0.0' },
     { capabilities: { tools: {} } }
   );
-
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const text = await handleTool(request.params.name, request.params.arguments || {});
@@ -276,18 +277,36 @@ app.get('/sse', async (req, res) => {
       return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
     }
   });
+  return server;
+}
+
+// Healthcheck para Render y verificación manual
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', server: 'rema-meta-ads MCP', version: '1.0.0' });
+});
+
+// Endpoint SSE — Claude.ai se conecta aquí con GET /sse
+app.get('/sse', async (req, res) => {
+  // Headers SSE explícitos
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Evita buffering en proxies (Render)
+
+  const transport = new SSEServerTransport('/messages', res);
+  const server = buildMcpServer();
 
   transports.set(transport.sessionId, transport);
   res.on('close', () => {
     transports.delete(transport.sessionId);
-    console.log(`Sesión ${transport.sessionId} cerrada.`);
+    console.log(`Sesión SSE cerrada: ${transport.sessionId}`);
   });
 
   console.log(`Nueva conexión SSE: ${transport.sessionId}`);
   await server.connect(transport);
 });
 
-// Endpoint de mensajes POST — Claude.ai envía mensajes aquí
+// Endpoint POST de mensajes — Claude.ai envía mensajes aquí
 app.post('/messages', async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = transports.get(sessionId);
@@ -300,4 +319,5 @@ app.post('/messages', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`REMA Meta Ads MCP Server corriendo en puerto ${PORT}`);
   console.log(`Cuenta publicitaria: ${AD_ACCOUNT_ID}`);
+  console.log(`Endpoint MCP: /sse`);
 });
