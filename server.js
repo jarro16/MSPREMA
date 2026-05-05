@@ -1,6 +1,8 @@
 import express from 'express';
+import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import https from 'https';
 
@@ -31,9 +33,7 @@ function fetchMeta(path, params = {}) {
   });
 }
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
+function today() { return new Date().toISOString().slice(0, 10); }
 function firstOfMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
@@ -57,21 +57,17 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        status: {
-          type: 'string',
-          enum: ['ACTIVE', 'PAUSED', 'ARCHIVED'],
-          description: 'Estado de las campañas. Default: ACTIVE',
-        },
+        status: { type: 'string', enum: ['ACTIVE', 'PAUSED', 'ARCHIVED'], description: 'Estado. Default: ACTIVE' },
       },
     },
   },
   {
     name: 'get_all_campaigns_insights',
-    description: 'Métricas resumidas de TODAS las campañas activas de REMA: leads generados, CPL, gasto, impresiones y CTR en un rango de fechas.',
+    description: 'Métricas de TODAS las campañas activas de REMA: leads, CPL, gasto, impresiones y CTR.',
     inputSchema: {
       type: 'object',
       properties: {
-        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD. Default: primer día del mes actual.' },
+        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD. Default: inicio del mes.' },
         until: { type: 'string', description: 'Fecha fin YYYY-MM-DD. Default: hoy.' },
       },
     },
@@ -84,14 +80,14 @@ const TOOLS = [
       required: ['campaign_id'],
       properties: {
         campaign_id: { type: 'string', description: 'ID numérico de la campaña' },
-        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD. Default: primer día del mes actual.' },
-        until: { type: 'string', description: 'Fecha fin YYYY-MM-DD. Default: hoy.' },
+        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD.' },
+        until: { type: 'string', description: 'Fecha fin YYYY-MM-DD.' },
       },
     },
   },
   {
     name: 'get_adsets',
-    description: 'Lista los conjuntos de anuncios (ad sets) de una campaña de REMA con presupuesto y segmentación.',
+    description: 'Lista los ad sets de una campaña de REMA con presupuesto y segmentación.',
     inputSchema: {
       type: 'object',
       required: ['campaign_id'],
@@ -107,20 +103,20 @@ const TOOLS = [
       type: 'object',
       properties: {
         campaign_id: { type: 'string', description: 'ID de la campaña' },
-        adset_id: { type: 'string', description: 'ID del ad set (alternativo a campaign_id)' },
+        adset_id: { type: 'string', description: 'ID del ad set' },
       },
     },
   },
   {
     name: 'get_ads_insights',
-    description: 'Métricas por anuncio individual de REMA: leads, CPL, CTR, hook rate. Permite identificar el creativo ganador.',
+    description: 'Métricas por anuncio individual de REMA: leads, CPL, CTR, hook rate.',
     inputSchema: {
       type: 'object',
       required: ['campaign_id'],
       properties: {
         campaign_id: { type: 'string', description: 'ID numérico de la campaña' },
-        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD. Default: primer día del mes actual.' },
-        until: { type: 'string', description: 'Fecha fin YYYY-MM-DD. Default: hoy.' },
+        since: { type: 'string', description: 'Fecha inicio YYYY-MM-DD.' },
+        until: { type: 'string', description: 'Fecha fin YYYY-MM-DD.' },
       },
     },
   },
@@ -138,7 +134,6 @@ async function handleTool(name, args) {
       });
       return JSON.stringify(data, null, 2);
     }
-
     case 'get_all_campaigns_insights': {
       const since = args.since || firstOfMonth();
       const until = args.until || today();
@@ -163,7 +158,6 @@ async function handleTool(name, args) {
       }));
       return JSON.stringify({ data: processed, period: { since, until } }, null, 2);
     }
-
     case 'get_campaign_insights': {
       const since = args.since || firstOfMonth();
       const until = args.until || today();
@@ -187,7 +181,6 @@ async function handleTool(name, args) {
         period: { since, until },
       }, null, 2);
     }
-
     case 'get_adsets': {
       const data = await fetchMeta(`/${args.campaign_id}/adsets`, {
         fields: 'id,name,status,daily_budget,lifetime_budget,optimization_goal,billing_event,start_time,end_time',
@@ -195,13 +188,9 @@ async function handleTool(name, args) {
       });
       return JSON.stringify(data, null, 2);
     }
-
     case 'get_ads': {
-      const endpoint = args.adset_id
-        ? `/${args.adset_id}/ads`
-        : args.campaign_id
-          ? `/${args.campaign_id}/ads`
-          : null;
+      const endpoint = args.adset_id ? `/${args.adset_id}/ads`
+        : args.campaign_id ? `/${args.campaign_id}/ads` : null;
       if (!endpoint) return JSON.stringify({ error: 'Se requiere campaign_id o adset_id' });
       const data = await fetchMeta(endpoint, {
         fields: 'id,name,status,creative{id,name,title,body,image_url}',
@@ -209,7 +198,6 @@ async function handleTool(name, args) {
       });
       return JSON.stringify(data, null, 2);
     }
-
     case 'get_ads_insights': {
       const since = args.since || firstOfMonth();
       const until = args.until || today();
@@ -222,7 +210,6 @@ async function handleTool(name, args) {
       const processed = (data.data || []).map((ad) => {
         const videoViews = parseInt(extractAction(ad.actions, 'video_view') || '0');
         const impressions = parseInt(ad.impressions || '0');
-        const hookRate = impressions > 0 ? ((videoViews / impressions) * 100).toFixed(2) + '%' : 'N/A';
         return {
           ad_id: ad.ad_id,
           ad_name: ad.ad_name,
@@ -234,35 +221,17 @@ async function handleTool(name, args) {
           reach: ad.reach,
           leads: extractAction(ad.actions, 'lead'),
           cpl: extractCostPerAction(ad.cost_per_action_type, 'lead'),
-          hook_rate: hookRate,
+          hook_rate: impressions > 0 ? ((videoViews / impressions) * 100).toFixed(2) + '%' : 'N/A',
         };
       });
       return JSON.stringify({ data: processed, period: { since, until } }, null, 2);
     }
-
     default:
       return JSON.stringify({ error: `Herramienta desconocida: ${name}` });
   }
 }
 
-// ── Servidor Express + SSE ──────────────────────────────────────────────────────
-const app = express();
-
-// CORS — permite conexiones desde Claude.ai y cualquier cliente externo
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, x-mcp-session-id');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-app.use(express.json());
-
-// Mapa de sesiones SSE activas
-const transports = new Map();
-
-// Función que crea y configura el servidor MCP (se reutiliza por sesión)
+// ── Factory de servidor MCP ─────────────────────────────────────────────────────
 function buildMcpServer() {
   const server = new Server(
     { name: 'rema-meta-ads', version: '1.0.0' },
@@ -280,44 +249,97 @@ function buildMcpServer() {
   return server;
 }
 
-// Healthcheck para Render y verificación manual
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', server: 'rema-meta-ads MCP', version: '1.0.0' });
+// ── Express ─────────────────────────────────────────────────────────────────────
+const app = express();
+
+// CORS — requerido para conexiones desde Claude.ai
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
 });
 
-// Endpoint SSE — Claude.ai se conecta aquí con GET /sse
+app.use(express.json());
+
+// ── Healthcheck ─────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', server: 'rema-meta-ads MCP', version: '1.0.0', protocols: ['streamable-http', 'sse'] });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// PROTOCOLO 1: Streamable HTTP (estándar actual — usar esta URL en Claude.ai)
+// URL: https://msprema.onrender.com/mcp
+// ────────────────────────────────────────────────────────────────────────────────
+const httpSessions = new Map();
+
+app.post('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+
+  if (sessionId && httpSessions.has(sessionId)) {
+    // Sesión existente
+    const transport = httpSessions.get(sessionId);
+    await transport.handleRequest(req, res, req.body);
+  } else {
+    // Nueva sesión
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) httpSessions.delete(transport.sessionId);
+    };
+    const server = buildMcpServer();
+    await server.connect(transport);
+    if (transport.sessionId) httpSessions.set(transport.sessionId, transport);
+    await transport.handleRequest(req, res, req.body);
+  }
+});
+
+app.get('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (!sessionId || !httpSessions.has(sessionId)) {
+    return res.status(400).json({ error: 'Sesión no válida' });
+  }
+  await httpSessions.get(sessionId).handleRequest(req, res);
+});
+
+app.delete('/mcp', (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (sessionId) httpSessions.delete(sessionId);
+  res.sendStatus(200);
+});
+
+// ────────────────────────────────────────────────────────────────────────────────
+// PROTOCOLO 2: SSE legacy (por compatibilidad)
+// URL: https://msprema.onrender.com/sse
+// ────────────────────────────────────────────────────────────────────────────────
+const sseSessions = new Map();
+
 app.get('/sse', async (req, res) => {
-  // Headers SSE explícitos
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Evita buffering en proxies (Render)
+  res.setHeader('X-Accel-Buffering', 'no');
 
   const transport = new SSEServerTransport('/messages', res);
   const server = buildMcpServer();
-
-  transports.set(transport.sessionId, transport);
-  res.on('close', () => {
-    transports.delete(transport.sessionId);
-    console.log(`Sesión SSE cerrada: ${transport.sessionId}`);
-  });
-
-  console.log(`Nueva conexión SSE: ${transport.sessionId}`);
+  sseSessions.set(transport.sessionId, transport);
+  res.on('close', () => sseSessions.delete(transport.sessionId));
   await server.connect(transport);
 });
 
-// Endpoint POST de mensajes — Claude.ai envía mensajes aquí
 app.post('/messages', async (req, res) => {
   const sessionId = req.query.sessionId;
-  const transport = transports.get(sessionId);
-  if (!transport) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
+  const transport = sseSessions.get(sessionId);
+  if (!transport) return res.status(404).json({ error: 'Sesión no encontrada' });
   await transport.handlePostMessage(req, res);
 });
 
+// ────────────────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`REMA Meta Ads MCP Server corriendo en puerto ${PORT}`);
-  console.log(`Cuenta publicitaria: ${AD_ACCOUNT_ID}`);
-  console.log(`Endpoint MCP: /sse`);
+  console.log(`REMA Meta Ads MCP Server — puerto ${PORT}`);
+  console.log(`  Streamable HTTP : /mcp   ← usar en Claude.ai`);
+  console.log(`  SSE legacy      : /sse`);
+  console.log(`  Cuenta          : ${AD_ACCOUNT_ID}`);
 });
